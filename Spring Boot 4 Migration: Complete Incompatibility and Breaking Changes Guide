@@ -1,0 +1,1847 @@
+# Spring Boot 4 Migration: Complete Incompatibility and Breaking Changes Guide
+
+Spring Boot 4 is a major architectural upgrade, not simply a dependency version upgrade.
+
+The migration from Spring Boot 3.x to 4.0 affects several layers simultaneously:
+
+1. Java and Jakarta EE platform requirements.
+2. Spring Boot's internal modularisation and package structure.
+3. Spring Framework 7 API changes.
+4. Spring Security 7 configuration and APIs.
+5. Jackson 3 replacing Jackson 2 as the preferred JSON implementation.
+6. Spring Data, Hibernate, Kafka, Batch and other ecosystem dependencies.
+7. Configuration properties and auto-configuration.
+8. Testing infrastructure.
+9. Build plugins and deployment architecture.
+
+The most important migration principle: distinguish compilation incompatibilities from runtime behaviour changes and operational incompatibilities.
+
+A project can compile successfully after migration and still have broken JSON contracts, security policies, database persistence, health probes or messaging behaviour.
+
+This guide focuses on migrating Spring Boot 3.5 to 4.0, which is the recommended upgrade path. If you are currently on 3.0–3.4, first consolidate onto 3.5.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+# 1. Platform-level incompatibilities
+
+These are the first things to check because they determine whether your existing application can run on Spring Boot 4 at all.
+
+## 1.1 Java version
+
+Minimum requirement: Java 17
+
+| Component        | Spring Boot 3.5    | Spring Boot 4.0 |
+| ---------------- | ------------------ | --------------- |
+| Minimum Java     | 17                 | 17              |
+| Recommended Java | 21 or later        | Latest LTS      |
+| Kotlin           | Depends on version | 2.2+            |
+| Spring Framework | 6.2                | 7.0             |
+| Spring Security  | 6.x                | 7.x             |
+
+Java 17 applications are still supported. You do not have to upgrade to Java 21 or 25 just because you are migrating to Spring Boot 4.
+
+However, you must review:
+
+- Maven compiler configuration.
+- Jenkins JDK installation.
+- Docker base images.
+- Third-party libraries' Java compatibility.
+- Annotation processors and compiler plugins.
+
+For example:
+
+```
+<properties>
+    <java.version>17</java.version>
+    <maven.compiler.release>17</maven.compiler.release>
+</properties>
+```
+
+Migration risk: A developer may build successfully using Java 21 locally, while Jenkins still uses Java 17 or an incompatible Maven toolchain.
+
+Make the build JDK explicit across all environments.
+
+## 1.2 Jakarta EE 11 and Servlet 6.1
+
+Platform breaking change
+
+Spring Boot 4 is based on Jakarta EE 11.
+
+Important compatibility baselines:
+
+| Technology          | New baseline |
+| ------------------- | ------------ |
+| Servlet             | 6.1          |
+| Tomcat              | 11.0         |
+| Jetty               | 12.1         |
+| JPA                 | 3.2          |
+| Hibernate ORM       | 7.1 / 7.2    |
+| Bean Validation     | 3.1          |
+| Hibernate Validator | 9.0 / 9.1    |
+| WebSocket           | 2.2          |
+
+This matters particularly if you deploy WAR files into externally managed application servers.
+
+For example:
+
+- Tomcat 10.1 implements Servlet 6.0.
+- Tomcat 11 implements Servlet 6.1.
+
+You should not assume a Spring Boot 4 WAR can be deployed to your existing Servlet 6.0 container.
+
+Another important detail: this is not another `javax.*` to `jakarta.*` migration. Spring Boot 3 already made that transition. Spring Boot 4 raises the Jakarta EE specification baseline.
+
+You should nevertheless search for old Java EE dependencies that remain in your project.
+
+```
+grep -R "javax.servlet" src/
+grep -R "javax.persistence" src/
+grep -R "javax.validation" src/
+```
+
+These imports are generally expected to use the corresponding `jakarta.*` packages.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+## 1.3 GraalVM Native Image
+
+If your application uses Native Image, Spring Boot 4 requires GraalVM 25 or later.
+
+This is separate from the minimum Java requirement.
+
+| Runtime              | Requirement |
+| -------------------- | ----------- |
+| Normal JVM           | Java 17+    |
+| GraalVM Native Image | GraalVM 25+ |
+
+You should also validate reachability metadata and native compatibility of third-party libraries.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+# 2. Spring Boot 4 modularisation — one of the biggest changes
+
+High migration impact
+
+This is one of the most important changes that developers can underestimate.
+
+Spring Boot 4 has restructured its internal modules into smaller, technology-focused components.
+
+Previously, Spring Boot provided relatively large JARs containing substantial amounts of auto-configuration and related infrastructure.
+
+Spring Boot 4 adopts a more modular architecture.
+
+## 2.1 New module naming convention
+
+The new convention is:
+
+```
+spring-boot-<technology>
+spring-boot-starter-<technology>
+```
+
+For example:
+
+| Technology | New module             | New starter                    |
+| ---------- | ---------------------- | ------------------------------ |
+| Web MVC    | spring-boot-webmvc     | spring-boot-starter-webmvc     |
+| WebFlux    | spring-boot-webflux    | spring-boot-starter-webflux    |
+| Security   | spring-boot-security   | spring-boot-starter-security   |
+| GraphQL    | spring-boot-graphql    | spring-boot-starter-graphql    |
+| JDBC       | spring-boot-jdbc       | spring-boot-starter-jdbc       |
+| Redis      | spring-boot-data-redis | spring-boot-starter-data-redis |
+| Flyway     | spring-boot-flyway     | spring-boot-starter-flyway     |
+| Liquibase  | spring-boot-liquibase  | spring-boot-starter-liquibase  |
+
+The module contains the relevant integration; the starter provides the convenient dependency composition.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+## 2.2 Existing starters renamed or deprecated
+
+Some familiar starters remain available but are deprecated.
+
+| Spring Boot 3.x                                   | Spring Boot 4 preferred replacement                        |
+| ------------------------------------------------- | ---------------------------------------------------------- |
+| `spring-boot-starter-web`                         | `spring-boot-starter-webmvc`                               |
+| `spring-boot-starter-web-services`                | `spring-boot-starter-webservices`                          |
+| `spring-boot-starter-oauth2-client`               | `spring-boot-starter-security-oauth2-client`               |
+| `spring-boot-starter-oauth2-resource-server`      | `spring-boot-starter-security-oauth2-resource-server`      |
+| `spring-boot-starter-oauth2-authorization-server` | `spring-boot-starter-security-oauth2-authorization-server` |
+
+Important distinction: deprecated does not necessarily mean removed in Boot 4. You should still migrate to the replacement rather than build new dependencies around the old names.
+
+## 2.3 Test dependencies are now modularised too
+
+This is particularly important.
+
+Previously, developers often used:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+Spring Boot 4 provides technology-specific test starters.
+
+For example:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-webmvc-test</artifactId>
+    <scope>test</scope>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security-test</artifactId>
+    <scope>test</scope>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+The actual test dependencies should match the technologies your application uses.
+
+For instance, `@WithMockUser` and `@WithUserDetails` now require the appropriate Spring Boot Security test infrastructure.
+
+## 2.4 What if you want to migrate gradually?
+
+Spring Boot provides transitional classic starters:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-classic</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test-classic</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+These provide an intermediate dependency arrangement similar to the previous generation.
+
+My recommendation:
+
+1. Use classic starters to get the application compiling.
+2. Fix source-code incompatibilities.
+3. Identify missing modules and starters.
+4. Replace classic dependencies with focused starters.
+5. Remove classic starters.
+
+This is a useful strategy for large enterprise applications with many internal modules.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+# 3. Spring Framework 7 API incompatibilities
+
+Spring Boot 4 is based on Spring Framework 7.
+
+This means that applications using Spring Framework APIs directly may encounter compilation errors even when they do not use Spring Boot APIs directly.
+
+## 3.1 Removed ListenableFuture
+
+Removed API
+
+Spring Framework 7 removes `ListenableFuture` in favour of Java's `CompletableFuture`.
+
+Old approach:
+
+```
+ListenableFuture<String> future =
+    asyncService.execute();
+
+future.addCallback(
+    result -> System.out.println(result),
+    error -> error.printStackTrace()
+);
+```
+
+New approach:
+
+```
+CompletableFuture<String> future =
+    asyncService.execute();
+
+future.thenAccept(
+    result -> System.out.println(result)
+).exceptionally(error -> {
+    error.printStackTrace();
+    return null;
+});
+```
+
+However, this is not always a direct one-to-one replacement.
+
+You need to review:
+
+- Callback execution semantics.
+- Exception propagation.
+- Thread execution.
+- Cancellation behaviour.
+- Future composition.
+
+For asynchronous workflows, replacing the type alone is insufficient.
+
+## 3.2 Removed OkHttp3 support
+
+Spring Framework 7 removes its OkHttp3 integration.
+
+If you use Spring HTTP clients with an OkHttp3-specific request factory, you must migrate to a supported HTTP client implementation.
+
+Possible alternatives include:
+
+- JDK HttpClient.
+- Apache HttpComponents.
+- Reactor Netty, depending on the application architecture.
+
+Review connection pooling, TLS, timeout, proxy and connection reuse behaviour.
+
+## 3.3 WebJars locator changes
+
+The old dependency:
+
+```
+org.webjars:webjars-locator-core
+```
+
+is replaced by:
+
+```
+org.webjars:webjars-locator-lite
+```
+
+This is relevant to applications serving frontend assets through Spring MVC.
+
+## 3.4 Other removed APIs
+
+| Old API or feature                                         | Migration consideration      |
+| ---------------------------------------------------------- | ---------------------------- |
+| `ListenableFuture`                                         | `CompletableFuture`          |
+| OkHttp3 integration                                        | Supported HTTP client        |
+| `Theme` support                                            | Remove or replace            |
+| `PathPatternParser.matchOptionalTrailingSeparator`         | Review URL matching          |
+| `HttpComponentsClientHttpRequestFactory#setConnectTimeout` | Update timeout configuration |
+| `spring-jcl` module                                        | Apache Commons Logging 1.3.0 |
+
+The last item is usually transparent to applications using the Spring logging abstraction, but direct dependencies on `spring-jcl` should be checked.
+
+Important for web applications: Review URL routing and trailing-slash behaviour. Do not assume every old path-matching configuration has exactly the same semantics.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+# 4. Jackson 2 → Jackson 3
+
+Very high migration impact
+
+This is probably one of the most significant application-level changes.
+
+Spring Boot 4 uses Jackson 3 as its preferred JSON implementation.
+
+The changes affect:
+
+- Package names.
+- Maven coordinates.
+- ObjectMapper configuration.
+- Custom serializers and deserializers.
+- Spring MVC message converters.
+- REST API request and response processing.
+- Third-party libraries.
+
+## 4.1 Package changes
+
+Previously:
+
+```
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonSerializer;
+```
+
+Jackson 3:
+
+```
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonSerializer;
+```
+
+One important exception:
+
+Jackson annotations remain under:
+
+```
+import com.fasterxml.jackson.annotation.JsonProperty;
+```
+
+Do not perform a blind global replacement of every `com.fasterxml.jackson` import.
+
+## 4.2 Maven dependency changes
+
+Jackson 2:
+
+```
+<dependency>
+    <groupId>com.fasterxml.jackson.core</groupId>
+    <artifactId>jackson-databind</artifactId>
+</dependency>
+```
+
+Jackson 3:
+
+```
+<dependency>
+    <groupId>tools.jackson.core</groupId>
+    <artifactId>jackson-databind</artifactId>
+</dependency>
+```
+
+Prefer Spring Boot's managed Jackson starter where possible.
+
+## 4.3 Configuration API changes
+
+Some Spring Boot Jackson integration classes have been renamed.
+
+| Jackson 2 / Boot 3                      | Jackson 3 / Boot 4            |
+| --------------------------------------- | ----------------------------- |
+| `Jackson2ObjectMapperBuilderCustomizer` | `JsonMapperBuilderCustomizer` |
+| `@JsonComponent`                        | `@JacksonComponent`           |
+| `@JsonMixin`                            | `@JacksonMixin`               |
+| `JsonObjectSerializer`                  | `ObjectValueSerializer`       |
+| `JsonValueDeserializer`                 | `ObjectValueDeserializer`     |
+
+For example, a previous customisation:
+
+```
+@Bean
+Jackson2ObjectMapperBuilderCustomizer customizer() {
+    return builder ->
+        builder.failOnUnknownProperties(false);
+}
+```
+
+Needs to be migrated to the Jackson 3 builder customisation API.
+
+## 4.4 Configuration properties changed
+
+Previously:
+
+```
+spring:
+  jackson:
+    read:
+      ...
+    write:
+      ...
+```
+
+Now the JSON-specific settings are under:
+
+```
+spring:
+  jackson:
+    json:
+      read:
+        ...
+      write:
+        ...
+```
+
+Parser-related properties also need reviewing.
+
+## 4.5 ObjectMapper behaviour changed
+
+Spring Boot 4 introduces format-specific mapper beans:
+
+- `JsonMapper` for JSON.
+- `XmlMapper` for XML.
+
+Previously, defining an `ObjectMapper` bean was commonly used to customise JSON behaviour.
+
+Now, if you want to replace an auto-configured mapper, define the appropriate `JsonMapper` or `XmlMapper` bean.
+
+There is another subtle change: Jackson 3 automatically detects all modules on the classpath by default, whereas Boot 3 automatically registered only well-known modules.
+
+This could change JSON serialisation behaviour without causing compilation errors.
+
+For compatibility testing, pay particular attention to:
+
+- Java Time serialisation.
+- Enum serialisation.
+- Null handling.
+- Date/time formats.
+- Unknown JSON properties.
+- Polymorphic type handling.
+- Custom serializers.
+- Generic collection deserialisation.
+
+## 4.6 Can you continue using Jackson 2?
+
+Yes, temporarily.
+
+Spring Boot 4 provides:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-jackson2</artifactId>
+</dependency>
+```
+
+However, this compatibility module is deprecated and intended as a transition mechanism.
+
+One additional complication: Spring Boot 4's Jersey 4 integration does not yet support Jackson 3, so Jersey applications may need the Jackson 2 module.
+
+My recommendation: Treat Jackson migration as its own workstream. Do not combine an untested Jackson 2-to-3 conversion with unrelated REST API changes.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+3
+
+
+
+# 5. Spring Security 6 → 7
+
+High security migration impact
+
+Spring Security 7 removes several deprecated configuration APIs.
+
+This is especially important because a migration can compile successfully but accidentally change endpoint access policies.
+
+## 5.1 `authorizeRequests()` removed
+
+Old configuration:
+
+```
+http
+    .authorizeRequests()
+        .antMatchers("/admin/**").hasRole("ADMIN")
+        .anyRequest().authenticated();
+```
+
+New configuration:
+
+```
+http
+    .authorizeHttpRequests(auth -> auth
+        .requestMatchers("/admin/**").hasRole("ADMIN")
+        .anyRequest().authenticated()
+    );
+```
+
+Key changes:
+
+| Old API                        | New API                            |
+| ------------------------------ | ---------------------------------- |
+| `authorizeRequests()`          | `authorizeHttpRequests()`          |
+| `antMatchers()`                | `requestMatchers()`                |
+| `and()` chaining               | Lambda DSL                         |
+| `apply()` custom DSL           | `with()`                           |
+| `AuthorizationManager.check()` | `AuthorizationManager.authorize()` |
+
+## 5.2 `and()` removed from HttpSecurity DSL
+
+Old:
+
+```
+http
+    .authorizeRequests()
+        .anyRequest().authenticated()
+        .and()
+    .formLogin()
+        .and()
+    .httpBasic();
+```
+
+New:
+
+```
+http
+    .authorizeHttpRequests(auth -> auth
+        .anyRequest().authenticated()
+    )
+    .formLogin(Customizer.withDefaults())
+    .httpBasic(Customizer.withDefaults());
+```
+
+The lambda DSL makes configuration more explicit and avoids the older chained builder pattern.
+
+## 5.3 Custom Security DSL migration
+
+If you implemented a custom DSL using:
+
+```
+http.apply(customDsl);
+```
+
+Migrate to:
+
+```
+http.with(customDsl, Customizer.withDefaults());
+```
+
+The old `apply()` method was deprecated before Spring Security 7.
+
+## 5.4 AuthorizationManager changes
+
+The old method:
+
+```
+authorizationManager.check(authentication, context);
+```
+
+has been replaced by:
+
+```
+authorizationManager.authorize(authentication, context);
+```
+
+This matters particularly if your organisation has custom authorization implementations.
+
+## 5.5 Dispatcher type matching
+
+Previously:
+
+```
+http.authorizeHttpRequests(auth -> auth
+    .shouldFilterAllDispatcherTypes(false)
+);
+```
+
+The migration approach uses explicit dispatcher matching:
+
+```
+http.authorizeHttpRequests(auth -> auth
+    .dispatcherTypeMatchers(DispatcherType.ERROR)
+    .permitAll()
+);
+```
+
+This deserves careful review because error dispatches, forwards and async requests can have different security implications.
+
+## 5.6 Spring Authorization Server
+
+Spring Authorization Server is now part of the Spring Security portfolio.
+
+Its dependency management has changed.
+
+Previously, you could override:
+
+```
+<spring-authorization-server.version>
+    ...
+</spring-authorization-server.version>
+```
+
+The corresponding version is now managed through Spring Security's version management.
+
+## 5.7 Security migration checklist
+
+Review these areas:
+
+- Multiple `SecurityFilterChain` configurations.
+- Request matchers and their ordering.
+- Method security (`@PreAuthorize`, `@PostAuthorize`).
+- Custom `AuthorizationManager` implementations.
+- OAuth2 login.
+- JWT resource server.
+- OAuth2 token validation.
+- CSRF.
+- CORS.
+- Session creation policy.
+- Custom authentication filters.
+- Error and async dispatcher handling.
+- Security test utilities.
+
+I would prioritise security policy regression tests over merely fixing compilation errors.
+
+Sources:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.spring.io\&sz=32)
+
+Home+2
+
+
+
+# 6. Configuration properties incompatibilities
+
+Runtime risk
+
+Configuration migration is particularly dangerous because incorrect properties do not always produce obvious compilation failures.
+
+Spring Boot 4 provides a migration tool:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-properties-migrator</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+It analyses application configuration at startup and reports outdated properties. It can also temporarily migrate certain properties at runtime.
+
+Remove it after migration.
+
+## 6.1 Important property changes
+
+| Area                              | Spring Boot 3.x                            | Spring Boot 4.0                                   |
+| --------------------------------- | ------------------------------------------ | ------------------------------------------------- |
+| Persistence exception translation | `spring.dao.exceptiontranslation.enabled`  | `spring.persistence.exceptiontranslation.enabled` |
+| Spring Session Redis              | `spring.session.redis.*`                   | `spring.session.data.redis.*`                     |
+| Spring Session MongoDB            | `spring.session.mongodb.*`                 | `spring.session.data.mongodb.*`                   |
+| MongoDB connection settings       | `spring.data.mongodb.*`                    | `spring.mongodb.*`                                |
+| MongoDB health                    | `management.health.mongo.enabled`          | `management.health.mongodb.enabled`               |
+| MongoDB command metrics           | `management.metrics.mongo.command.enabled` | `management.metrics.mongodb.command.enabled`      |
+| Tracing export                    | `management.tracing.enabled`               | `management.tracing.export.enabled`               |
+
+Be careful: not every `spring.data.mongodb.*` property has moved.
+
+For example, Spring Data-specific properties such as:
+
+```
+spring:
+  data:
+    mongodb:
+      auto-index-creation: true
+```
+
+remain under their existing namespace.
+
+You must distinguish MongoDB driver connection configuration from Spring Data MongoDB configuration.
+
+## 6.2 Logback default charset
+
+The default charset for Logback file logging is now UTF-8.
+
+Console logging uses the console charset when available, otherwise UTF-8.
+
+Potential impact:
+
+- Log parsing.
+- Chinese characters.
+- Legacy systems expecting a specific encoding.
+- Log shipping pipelines.
+
+If your logging platform assumes another encoding, explicitly configure it.
+
+## 6.3 DevTools LiveReload
+
+Previously, LiveReload was enabled by default when DevTools was used.
+
+Now it is disabled by default.
+
+Enable it explicitly if required:
+
+```
+spring:
+  devtools:
+    livereload:
+      enabled: true
+```
+
+## 6.4 Liveness and readiness probes
+
+Spring Boot 4 enables liveness and readiness health groups by default.
+
+This means:
+
+```
+/actuator/health/liveness
+/actuator/health/readiness
+```
+
+are exposed as health groups by default.
+
+For Kubernetes, this is relevant because:
+
+- Liveness determines whether the container should be restarted.
+- Readiness determines whether the Pod should receive traffic.
+
+Review existing probe configuration, management endpoint exposure and Kubernetes manifests.
+
+Do not automatically include every external dependency in the liveness check. A temporary database outage should not necessarily trigger a restart loop of every application instance.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+3
+
+
+
+# 7. Web layer incompatibilities
+
+## 7.1 Undertow support removed
+
+Removed
+
+Spring Boot 4.0 does not support Undertow because the required Servlet 6.1 baseline is not available in the Undertow integration.
+
+If your application uses:
+
+```
+<artifactId>spring-boot-starter-undertow</artifactId>
+```
+
+you must move to a supported alternative.
+
+Typical choices:
+
+- Tomcat 11.
+- Jetty 12.1.
+
+This is not just a POM change. Review:
+
+- Thread pool configuration.
+- Connection limits.
+- HTTP/2.
+- TLS.
+- Access logs.
+- Graceful shutdown.
+- Request handling performance.
+
+## 7.2 HttpMessageConverters changes
+
+Spring Boot's `HttpMessageConverters` has been deprecated in favour of the newer Spring Framework converter customisation model.
+
+There is an important distinction:
+
+- Declaring a custom `HttpMessageConverters` bean is still supported, but deprecated.
+- Contributing `HttpMessageConverter` beans directly to the application context is no longer supported in the same way.
+
+The new approach uses:
+
+```
+ClientHttpMessageConvertersCustomizer
+```
+
+and:
+
+```
+ServerHttpMessageConvertersCustomizer
+```
+
+This separates client-side and server-side converter configuration.
+
+For applications with custom JSON, XML or binary message converters, this should be an explicit migration task.
+
+## 7.3 Forwarded headers in WAR deployment
+
+If your WAR application uses:
+
+```
+server:
+  forward-headers-strategy: framework
+```
+
+this property no longer has an effect when deployed to an external container.
+
+You must register a `ForwardedHeaderFilter` yourself.
+
+This is particularly relevant when running behind:
+
+- Kubernetes Ingress.
+- API Gateway.
+- Reverse proxies.
+- Load balancers.
+
+Otherwise, the application may generate incorrect external URLs, redirect locations or scheme information.
+
+## 7.4 Tomcat WAR deployment
+
+For WAR deployment, the Tomcat dependency changes from:
+
+```
+<artifactId>spring-boot-starter-tomcat</artifactId>
+```
+
+to:
+
+```
+<artifactId>spring-boot-starter-tomcat-runtime</artifactId>
+```
+
+## 7.5 Jersey 4
+
+Spring Boot 4 supports Jersey 4.
+
+However, Jersey 4 does not yet support Jackson 3 in this integration.
+
+If your application uses Jersey for REST APIs, you need to evaluate the Jackson 2 compatibility module.
+
+This is an important exception to the general Jackson 3 migration strategy.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+3
+
+
+
+# 8. Database and persistence incompatibilities
+
+This area deserves particular attention because some changes can affect persisted data rather than just source code.
+
+## 8.1 Spring Data MongoDB
+
+Several MongoDB connection properties have moved.
+
+For example:
+
+```
+# Before
+spring:
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/mydb
+```
+
+```
+# After
+spring:
+  mongodb:
+    uri: mongodb://localhost:27017/mydb
+```
+
+But remember that not all Spring Data properties move.
+
+### UUID representation changes
+
+Spring Data MongoDB no longer provides the previous defaults for UUID and BigInteger/BigDecimal representations.
+
+You must configure the representations explicitly where needed.
+
+For example:
+
+```
+spring:
+  mongodb:
+    representation:
+      uuid: standard
+```
+
+The correct representation must match the data already stored in MongoDB.
+
+Do not simply select `standard` without checking your existing data.
+
+Changing UUID representation can make previously stored values appear unreadable or fail to match queries.
+
+This is a data compatibility risk, not merely a configuration issue.
+
+## 8.2 Hibernate dependency changes
+
+The Hibernate annotation processor dependency has changed:
+
+| Old                     | New                   |
+| ----------------------- | --------------------- |
+| `hibernate-jpamodelgen` | `hibernate-processor` |
+
+Also, Hibernate Proxool and Vibur integrations are no longer published.
+
+Review:
+
+- JPA entity mappings.
+- Hibernate custom types.
+- Attribute converters.
+- Query generation.
+- HQL/JPQL.
+- Schema generation.
+- Transaction boundaries.
+- Lazy loading and proxies.
+
+## 8.3 Elasticsearch client changes
+
+Spring Boot now auto-configures the newer Elasticsearch `Rest5Client` instead of the deprecated low-level `RestClient`.
+
+Previously:
+
+```
+RestClientBuilderCustomizer
+```
+
+Now:
+
+```
+Rest5ClientBuilderCustomizer
+```
+
+The old low-level client dependencies:
+
+```
+org.elasticsearch.client:elasticsearch-rest-client
+org.elasticsearch.client:elasticsearch-rest-client-sniffer
+```
+
+are no longer managed by Spring Boot.
+
+The higher-level `ElasticsearchClient` and Spring Data reactive client support remain.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+# 9. Messaging and asynchronous processing
+
+This category is especially important for enterprise applications with Kafka, RabbitMQ and scheduled processing.
+
+## 9.1 Spring Kafka retry changes
+
+Spring Kafka 4 has moved retry capabilities from Spring Retry to Spring Framework.
+
+The configuration property:
+
+```
+spring:
+  kafka:
+    retry:
+      topic:
+        backoff:
+          random: true
+```
+
+has been replaced by:
+
+```
+spring:
+  kafka:
+    retry:
+      topic:
+        backoff:
+          jitter: ...
+```
+
+The new jitter approach provides more flexibility.
+
+Do not treat this as a mechanical property rename. Verify the actual retry delay distribution, backoff policy and retry behaviour.
+
+## 9.2 Kafka Streams customization
+
+Old:
+
+```
+StreamBuilderFactoryBeanCustomizer
+```
+
+New:
+
+```
+StreamsBuilderFactoryBeanConfigurer
+```
+
+The new configurer implements `Ordered` with a default order of zero.
+
+If you have multiple customizers, review execution ordering.
+
+## 9.3 Spring AMQP retry
+
+Spring AMQP has also moved retry capabilities from Spring Retry to Spring Framework.
+
+Two new customisation interfaces are available:
+
+```
+RabbitTemplateRetrySettingsCustomizer
+RabbitListenerRetrySettingsCustomizer
+```
+
+Review:
+
+- Retry attempts.
+- Backoff intervals.
+- Exception classification.
+- Dead-letter routing.
+- Message acknowledgement.
+- Duplicate processing.
+- Transaction boundaries.
+
+## 9.4 Spring Batch 6 — a particularly dangerous change
+
+Potential data persistence change
+
+This is one of the changes I would place near the top of an enterprise migration risk register.
+
+Spring Batch can now operate without a database, using in-memory metadata.
+
+The regular starter:
+
+```
+<artifactId>spring-boot-starter-batch</artifactId>
+```
+
+uses this simplified mode.
+
+If you upgrade without changing your dependency, your application may stop persisting Batch metadata to its existing database.
+
+The previous arrangement can be retained by switching to:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-batch-jdbc</artifactId>
+</dependency>
+```
+
+Why is this dangerous?
+
+Spring Batch uses repository metadata to track:
+
+- Job instances.
+- Job executions.
+- Step executions.
+- Execution status.
+- Restartability.
+- Execution parameters.
+
+If you accidentally switch from JDBC metadata to in-memory metadata, restart and recovery behaviour can change significantly.
+
+For production batch applications, this must be validated before deployment.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+# 10. Spring Session and removed integrations
+
+Spring Boot 4 removes some direct integrations that previously existed.
+
+| Feature                  | Migration impact                    |
+| ------------------------ | ----------------------------------- |
+| Spring Session Hazelcast | Direct Boot support removed         |
+| Spring Session MongoDB   | Direct Boot support removed         |
+| Spring Session Redis     | Property namespace changed          |
+| Reactive Pulsar          | Reactive auto-configuration removed |
+| Spock integration        | Boot integration removed            |
+
+For Hazelcast and MongoDB session implementations, you may still be able to use the respective ecosystem libraries independently, but you must manage their integration and compatibility yourself.
+
+For reactive Pulsar, review whether the application can use the supported non-reactive integration or requires a different messaging architecture.
+
+For Spock, check the Groovy 5 compatibility status of your testing stack before deciding on an alternative.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+# 11. Testing framework incompatibilities
+
+High risk when automated tests are limited
+
+Spring Boot 4 changes several testing APIs and dependency arrangements.
+
+## 11.1 `@MockBean` and `@SpyBean` removed
+
+Old:
+
+```
+@SpringBootTest
+class UserServiceTest {
+
+    @MockBean
+    private UserRepository userRepository;
+}
+```
+
+New:
+
+```
+@SpringBootTest
+class UserServiceTest {
+
+    @MockitoBean
+    private UserRepository userRepository;
+}
+```
+
+Similarly:
+
+```
+@SpyBean
+```
+
+becomes:
+
+```
+@MockitoSpyBean
+```
+
+There is a significant difference:
+
+The new annotations can be used on test classes, but not in `@Configuration` classes as the old annotations could be.
+
+If you used shared `@TestConfiguration` classes to declare mocks for multiple test suites, you need to redesign that arrangement.
+
+## 11.2 MockitoTestExecutionListener removed
+
+If your tests relied on Spring Boot's previous listener to initialise Mockito `@Mock` and `@Captor` fields, they may stop working.
+
+Use Mockito's own extension:
+
+```
+@ExtendWith(MockitoExtension.class)
+class UserServiceTest {
+
+    @Mock
+    private UserRepository repository;
+
+    @Captor
+    private ArgumentCaptor<User> captor;
+}
+```
+
+## 11.3 `@SpringBootTest` no longer automatically configures MockMvc
+
+Previously:
+
+```
+@SpringBootTest
+class UserControllerTest {
+    // MockMvc support
+}
+```
+
+Now:
+
+```
+@SpringBootTest
+@AutoConfigureMockMvc
+class UserControllerTest {
+}
+```
+
+## 11.4 TestRestTemplate and WebClient
+
+`@SpringBootTest` no longer automatically provides the previous `WebClient` and `TestRestTemplate` test beans.
+
+You need the appropriate test configuration and dependencies.
+
+For example:
+
+```
+@SpringBootTest
+@AutoConfigureTestRestTemplate
+class ApiIntegrationTest {
+}
+```
+
+Spring Boot also introduces `RestTestClient`, which is worth evaluating as an alternative.
+
+## 11.5 PropertyMapping package changes
+
+Previously:
+
+```
+org.springframework.boot.test.autoconfigure.properties.PropertyMapping
+```
+
+Now:
+
+```
+org.springframework.boot.test.context.PropertyMapping
+```
+
+The `Skip` enum also moves.
+
+## 11.6 JUnit 6
+
+Spring Framework 7 adopts JUnit 6 as its test baseline.
+
+Review:
+
+- JUnit 5-specific integrations.
+- Maven Surefire and Failsafe.
+- Test engines.
+- Mockito.
+- Spock.
+- Internal testing libraries.
+- Custom test extensions.
+
+Do not assume that every third-party test plugin supports the new test stack automatically.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+# 12. Spring Boot internal APIs and custom integrations
+
+This is particularly important if your organisation maintains internal Spring Boot libraries, common starters or auto-configuration frameworks.
+
+## 12.1 BootstrapRegistry package changes
+
+Previously:
+
+```
+import org.springframework.boot.BootstrapRegistry;
+```
+
+Now:
+
+```
+import org.springframework.boot.bootstrap.BootstrapRegistry;
+```
+
+Related bootstrap classes have also moved.
+
+## 12.2 EnvironmentPostProcessor package changes
+
+Previously:
+
+```
+import org.springframework.boot.env.EnvironmentPostProcessor;
+```
+
+Now:
+
+```
+import org.springframework.boot.EnvironmentPostProcessor;
+```
+
+If you have a custom implementation registered in:
+
+```
+META-INF/spring.factories
+```
+
+you need to review both:
+
+- Java imports.
+- Registration metadata.
+
+The old interface remains temporarily available in deprecated form, but should not be used for new code.
+
+## 12.3 PropertyMapper behaviour changed
+
+This is a subtle behavioural incompatibility.
+
+Previously, Spring Boot's `PropertyMapper` had methods for controlling whether mappings were applied when the source value was null.
+
+The old:
+
+```
+alwaysApplyingWhenNonNull()
+```
+
+has been removed.
+
+The new API uses:
+
+```
+always()
+```
+
+Consider:
+
+```
+mapper.from(source::getName)
+      .to(destination::setName);
+```
+
+In Boot 4, if `source.getName()` returns null, the destination setter is not called.
+
+If you need to call the setter even with null:
+
+```
+mapper.from(source::getName)
+      .always()
+      .to(destination::setName);
+```
+
+This matters for custom auto-configuration and property-binding infrastructure.
+
+## 12.4 JSpecify nullability
+
+Spring Boot 4 adopts JSpecify nullability annotations.
+
+For example:
+
+```
+org.jspecify.annotations.Nullable
+```
+
+This can affect:
+
+- Kotlin interoperability.
+- Nullness static analysis.
+- Checker Framework.
+- NullAway.
+- Custom annotation processors.
+
+If your project has strict null checking, previously compiling code may now fail because API nullability contracts are more explicit.
+
+Also review old Spring nullability annotations in:
+
+```
+org.springframework.lang
+```
+
+## 12.5 Auto-configuration classes are no longer public APIs
+
+Spring Boot 4 removes public members, other than constants, from auto-configuration classes.
+
+This is important for internal frameworks that directly invoke or extend Boot auto-configuration implementation classes.
+
+For example, if your company has a shared library that imports an auto-configuration class and calls its public methods directly, you may encounter compilation failures.
+
+Architectural recommendation: Integrate through supported extension points:
+
+- `@ConditionalOnClass`
+- `@ConditionalOnMissingBean`
+- `@ConfigurationProperties`
+- `@ImportAutoConfiguration`
+- Customizers.
+- Runtime hints.
+- Application-level beans.
+
+Avoid coupling internal libraries to implementation details of Spring Boot auto-configuration.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+# 13. Build and packaging incompatibilities
+
+These changes are easy to overlook because they do not necessarily affect application source code.
+
+## 13.1 Classic executable JAR loader removed
+
+Spring Boot 4 removes support for the classic uber-JAR loader.
+
+If your Maven build contains:
+
+```
+<loaderImplementation>CLASSIC</loaderImplementation>
+```
+
+remove it.
+
+## 13.2 Embedded executable JAR launch scripts removed
+
+Previously, Spring Boot supported fully executable JARs with embedded Unix launch scripts.
+
+That functionality has been removed.
+
+You can still build executable JARs and run:
+
+```
+java -jar application.jar
+```
+
+If you depend on embedded launch scripts, replace them with deployment scripts or another packaging mechanism.
+
+## 13.3 Optional Maven dependencies
+
+Another subtle change:
+
+Optional dependencies are no longer automatically included in uber-JARs.
+
+If your application depends on optional dependencies being packaged, review the Maven plugin configuration:
+
+```
+<includeOptional>true</includeOptional>
+```
+
+Do not assume that a dependency visible in the development classpath is necessarily included in the production artifact.
+
+## 13.4 CycloneDX Gradle plugin
+
+The minimum supported CycloneDX Gradle plugin version is now 3.0.0.
+
+This matters if your CI pipeline generates SBOMs for software supply-chain compliance.
+
+## 13.5 Maven dependency management
+
+Spring Boot 4 has changed dependency management for several libraries.
+
+Examples:
+
+- Spring Retry.
+- Spring Authorization Server.
+- Elasticsearch low-level clients.
+- Hibernate integrations.
+
+If you use a dependency that is no longer managed by Boot, you must manage its version explicitly.
+
+Do not blindly add the latest version. Select a version compatible with the Spring Boot 4 ecosystem.
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+# 14. Other important behavioural changes
+
+These changes may not break compilation, but can change production behaviour.
+
+| Area              | Change                                                                          | Potential impact                          |
+| ----------------- | ------------------------------------------------------------------------------- | ----------------------------------------- |
+| Tracing           | `management.tracing.enabled` becomes `management.tracing.export.enabled`        | Tracing export configuration              |
+| Actuator          | JSpecify nullability replaces old nullable declarations for endpoint parameters | Custom endpoint compatibility             |
+| Static resources  | `/fonts/**` added to common static locations                                    | Spring Security resource matching         |
+| Logging           | UTF-8 default charset                                                           | Log ingestion and parsing                 |
+| Jackson           | All classpath modules automatically detected                                    | JSON output changes                       |
+| Health            | Liveness/readiness groups enabled by default                                    | Kubernetes probes                         |
+| DevTools          | LiveReload disabled by default                                                  | Developer workflow                        |
+| Forwarded headers | WAR deployment behaviour changes                                                | Reverse-proxy URLs                        |
+| HTTP clients      | JDK HTTP client uses virtual threads when enabled                               | Threading and performance characteristics |
+
+One particularly interesting security detail is the addition of `/fonts/**` to common static resource locations.
+
+If you use:
+
+```
+PathRequest.toStaticResources().atCommonLocations()
+```
+
+your security configuration may now match more resources than before.
+
+If you do not want font resources included, explicitly exclude them:
+
+```
+PathRequest.toStaticResources()
+    .atCommonLocations()
+    .excluding(StaticResourceLocation.FONTS);
+```
+
+Source:&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+2
+
+
+
+# 15. Complete incompatibility inventory by technology
+
+The following is a useful starting point for an enterprise migration impact assessment.
+
+| Technology            | Major change                                     | Severity          |
+| --------------------- | ------------------------------------------------ | ----------------- |
+| Java                  | JDK 17 minimum                                   | High if older JDK |
+| Jakarta EE            | Servlet 6.1 baseline                             | High              |
+| Spring Framework      | 6.2 → 7.0                                        | High              |
+| Spring Boot           | Internal modularisation                          | High              |
+| Spring Security       | 6.x → 7.x                                        | High              |
+| Jackson               | Jackson 2 → 3                                    | Very high         |
+| Spring MVC            | Converter configuration changes                  | High              |
+| Jersey                | Jersey 4 / Jackson 2 compatibility               | High              |
+| Tomcat                | Tomcat 11 baseline                               | High              |
+| Undertow              | Support removed                                  | Critical if used  |
+| Spring Data MongoDB   | Property and representation changes              | High              |
+| Hibernate             | Hibernate 7.x                                    | High              |
+| Elasticsearch         | RestClient → Rest5Client                         | Medium–High       |
+| Spring Batch          | JDBC metadata no longer default                  | Critical if used  |
+| Spring Kafka          | Retry framework changes                          | High              |
+| Spring AMQP           | Retry framework changes                          | High              |
+| Spring Session        | Hazelcast/MongoDB integrations removed from Boot | High if used      |
+| Spring Pulsar         | Reactive integration removed                     | High if used      |
+| Mockito               | `@MockBean` → `@MockitoBean`                     | Medium            |
+| JUnit                 | JUnit 6 baseline                                 | High              |
+| Spock                 | Boot integration removed                         | High if used      |
+| GraalVM               | Native Image 25+                                 | High if used      |
+| Maven                 | Optional dependencies and loader changes         | Medium            |
+| Actuator              | Health and tracing configuration changes         | Medium            |
+| Custom Boot libraries | Package and API changes                          | High              |
+
+This is a practical inventory of the major documented migration areas, not an exhaustive list of every removed method or every transitive third-party compatibility issue.
+
+# 16. How I would execute the migration in an enterprise environment
+
+Knowing the difference between breaking changes and having a strategy to detect them is what makes a migration successful.
+
+I would divide the migration into six stages.
+
+## Spring Boot 4 migration workflow
+
+1. Dependency and compatibility discovery
+   - Generate Maven dependency tree.
+   - Identify removed and deprecated APIs.
+   - Identify unsupported third-party libraries.
+   - Build a compatibility inventory.
+
+     Static analysis
+2. Platform and dependency migration
+   - Upgrade to Spring Boot 3.5 first.
+   - Validate JDK and Servlet requirements.
+   - Upgrade Spring Cloud and other Spring projects.
+   - Upgrade Maven plugins and dependencies.
+3. Automated source-code migration
+   - Update imports and packages.
+   - Replace removed APIs.
+   - Migrate Security configuration.
+   - Migrate Jackson customisations.
+   - Update test annotations.
+
+     OpenRewrite + AI assistance
+4. Configuration migration
+   - Migrate YAML/properties.
+   - Run properties migrator.
+   - Review logging and Actuator.
+   - Validate infrastructure configuration.
+5. Functional and regression validation
+   - API contract comparison.
+   - Security regression testing.
+   - Database persistence verification.
+   - Kafka and Batch processing verification.
+   - Performance comparison.
+6. Production deployment
+   - Canary deployment.
+   - Monitor errors, latency and resource consumption.
+   - Compare old and new versions.
+   - Rollback if necessary.
+
+## 16.1 Maven dependency analysis
+
+Start with:
+
+```
+mvn dependency:tree -Dverbose
+```
+
+Generate the effective POM:
+
+```
+mvn help:effective-pom
+```
+
+Check for dependency convergence:
+
+```
+mvn dependency:analyze
+```
+
+You should generate a dependency inventory containing:
+
+| Field            | Example                           |
+| ---------------- | --------------------------------- |
+| Dependency       | jackson-databind                  |
+| Current version  | 2.x                               |
+| Target version   | 3.x                               |
+| Managed by Boot  | Yes                               |
+| Breaking change  | Package and API changes           |
+| Migration action | Replace imports and customisation |
+| Validation       | JSON contract tests               |
+
+Pay particular attention to dependencies that are not managed by Spring Boot, such as Spring Cloud and internal company libraries.
+
+## 16.2 Source-code incompatibility scanning
+
+Use targeted searches before attempting compilation.
+
+For example:
+
+```
+grep -R "@MockBean" src/
+grep -R "@SpyBean" src/
+
+grep -R "ListenableFuture" src/
+grep -R "authorizeRequests" src/
+
+grep -R "Jackson2ObjectMapperBuilderCustomizer" src/
+grep -R "org.springframework.boot.env.EnvironmentPostProcessor" src/
+
+grep -R "RestClientBuilderCustomizer" src/
+grep -R "spring-boot-starter-undertow" pom.xml
+```
+
+For Jackson, inspect both Java imports and Maven coordinates.
+
+A simple text search is useful for initial discovery, but it cannot reliably distinguish comments, generated source, test code and actual executable references.
+
+Use AST-based analysis for automated remediation.
+
+## 16.3 OpenRewrite versus AI
+
+I would divide migration work by the nature of the change.
+
+| Migration task                  | Preferred approach          |
+| ------------------------------- | --------------------------- |
+| Import/package changes          | OpenRewrite                 |
+| Simple API replacements         | OpenRewrite                 |
+| Maven dependency updates        | Maven automation            |
+| Configuration property renames  | OpenRewrite + validation    |
+| Security DSL migration          | AI-assisted + manual review |
+| Jackson customisation migration | AI-assisted + manual review |
+| Retry behaviour changes         | Developer-led               |
+| MongoDB data representation     | Developer-led               |
+| Spring Batch metadata changes   | Developer-led               |
+| API contract regression         | Automated tests             |
+
+The important principle is:
+
+Do not let AI treat every incompatibility as a syntactic replacement problem.
+
+For example, changing:
+
+```
+@MockBean
+```
+
+to:
+
+```
+@MockitoBean
+```
+
+is largely mechanical.
+
+However, changing MongoDB UUID representation or Spring Batch metadata persistence requires understanding existing production data and business behaviour.
+
+# 17. The biggest migration risks when automated tests are missing
+
+This deserves special attention.
+
+In the environment you previously described, the build uses Maven, Jenkins and GitHub Copilot, with very limited automated test coverage. That changes the migration strategy substantially.&#x20;
+
+I would classify the risks as follows:
+
+| Risk              | Why compilation is insufficient              | Required validation              |
+| ----------------- | -------------------------------------------- | -------------------------------- |
+| Jackson 3         | JSON output can change                       | Golden-master API tests          |
+| Spring Security 7 | Access policies can change                   | Endpoint authorization matrix    |
+| MongoDB           | UUID representation can change               | Existing-record read/write tests |
+| Spring Batch      | Metadata persistence mode changes            | Job restart and recovery tests   |
+| Kafka             | Retry/backoff behaviour changes              | Retry and DLQ integration tests  |
+| Actuator          | Health groups change                         | Kubernetes probe verification    |
+| HTTP converters   | Serialization and content negotiation change | Request/response contract tests  |
+| Threading         | Client execution characteristics change      | Load and concurrency tests       |
+
+I would establish at least five mandatory validation gates.
+
+1. Build gate: Compilation and dependency compatibility.
+2. API gate: Request and response compatibility.
+3. Security gate: Authentication and authorization correctness.
+4. Data gate: Database read/write and transaction correctness.
+5. Operational gate: Startup, health checks, latency, memory and error rates.
+
+If the existing application has no meaningful automated tests, introduce characterization tests before changing the framework.
+
+You do not need 100% test coverage. You need coverage of the critical behaviours that could cause production incidents.
+
+# 18. My prioritisation: what should be migrated first?
+
+For a typical enterprise Spring Boot application, I would prioritise these incompatibilities:
+
+Priority 1 — Critical
+
+P0
+
+- Unsupported Servlet container.
+- Spring Batch metadata persistence.
+- MongoDB UUID representation.
+- Security policy changes.
+- Jackson API and data contract compatibility.
+
+  Priority 2 — High
+
+  P1
+- Spring Boot modularisation.
+- Spring Framework 7 removed APIs.
+- Spring Cloud compatibility.
+- Kafka and AMQP retry changes.
+- Hibernate and Elasticsearch integration.
+
+  Priority 3 — Medium
+
+  P2
+- Test framework migration.
+- Logging and tracing properties.
+- Actuator health groups.
+- Build plugin changes.
+- Internal auto-configuration package changes.
+
+One qualification: Priority 3 is not necessarily low impact. If an application depends heavily on a particular integration, that integration can immediately become P0.
+
+# 19. Official migration references
+
+These are the primary documents I would use as the source of truth when building an automated migration knowledge base.
+
+1. [Spring Boot 4.0 Migration Guide](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide?utm_source=chatgpt.com) — comprehensive migration changes.
+2. [Spring Boot 4.0 Release Notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Release-Notes?utm_source=chatgpt.com) — new features and release-level changes.
+3. [Spring Framework 7 Release Notes](https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-7.0-Release-Notes?utm_source=chatgpt.com) — removed APIs and platform requirements.
+4. [Spring Security 7 Migration Guide](https://docs.spring.io/spring-security/reference/7.2/migration/index.html?utm_source=chatgpt.com) — security API migration.
+5. [Spring Security 7 What's New](https://docs.spring.io/spring-security/reference/7.0/whats-new.html?utm_source=chatgpt.com) — removed APIs and new security features.
+
+## Final architectural assessment
+
+The key insight is that Spring Boot 4 migration has three fundamentally different types of incompatibility:
+
+| Type                          | Example                                | Can automation solve it?       |
+| ----------------------------- | -------------------------------------- | ------------------------------ |
+| Structural incompatibility    | Package rename, removed API            | Mostly yes                     |
+| Configuration incompatibility | YAML property rename                   | Partially                      |
+| Semantic incompatibility      | Security, retry, persistence behaviour | Requires functional validation |
+
+I would design a migration factory around these three categories rather than simply collecting compilation errors and asking AI to fix them.
+
+The most dangerous failures are not compilation failures. They are applications that compile, start successfully and silently behave differently in production.
+
+That should be the central design principle for any Spring Boot 3-to-4 migration programme.
